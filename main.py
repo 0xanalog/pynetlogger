@@ -1,3 +1,4 @@
+import argparse
 import gzip
 
 from sys import exit
@@ -8,8 +9,10 @@ from requests.exceptions import ConnectionError
 from time import time
 from socket import getfqdn,gethostbyname
 
+from scapy.layers.inet import fragment
+
 from scapy.all import Ether as ether
-from scapy.all import Packet,Raw,ARP,DNS,ICMP,DNSQR,TCP,IP,UDP,DHCP,sniff,srp,wrpcap
+from scapy.all import Packet,Raw,ARP,ICMP,DNSQR,TCP,IP,UDP,DHCP,sniff,srp,wrpcap,checksum
 
 from pydantic import BaseModel
 
@@ -33,7 +36,7 @@ class Log(BaseModel):
 
 # Fonction d'envoi des logs JSON au serveur distant
 def send_logs(log : dict):
-    response = requests.post(LOG_SERVER_URL, data=log)
+    response = post(LOG_SERVER_URL, data=log)
     if response.status_code != 200:
         print("Erreur lors de l\'envoi des logs au serveur distant")
 
@@ -51,23 +54,68 @@ def mac(ip) -> str:
     
 # tenter de resoudre les noms de domaines
 def resolve_domain(hostname:str) -> str:
-    return socket.getfqdn(hostname)
+    return getfqdn(hostname)
 
 # Resoudre une IP depuis son domaine
 def resolve_ip(hostname:str) -> str:
-    return socket.gethostbyname(hostname)
+    return gethostbyname(hostname)
 
 
 # Le traffic est-il malicieux ?
 def filter(pkt : Packet) -> dict[str,str]:
     details : list[str] = []
-    log     : Log       = Log(timestamp=time.time(),pkt=pkt,info={"category":"info","details":details})
-    
+    log     : Log       = Log(timestamp=time(),pkt=pkt,info={"category":"info","details":details})
 
-    #IP length
-    if (IP in log.pkt and len(pkt) > 65535):
-        details.append("exceeded ip length")
+    #IP layer check
+    if log.pkt.haslayer(IP):
+        # Extraire les champs du paquet
+        version = log.pkt[IP].version
+        ihl = log.pkt[IP].ihl
+        tot_len = log.pkt[IP].len
+        flags = log.pkt[IP].flags
+        frag_offset = log.pkt[IP].frag
+        ttl = log.pkt[IP].ttl
+        # tos = packet[IP].tos
+        # id = packet[IP].id
+        # protocol = packet[IP].proto
+        # check = log.pkt[IP].chksum
+        # src = packet[IP].src
+        # dst = packet[IP].dst
 
+        if (len(log.pkt[IP]) > 65535):
+            details.append("Exceeded ip length")
+        
+        if (tot_len != len(log.pkt[IP])):
+            details.append("Invalid IP packet length")
+
+        # Vérifier si IHL est valide
+        if ihl < 5:
+            details.append("Invalid IP packet: IHL is too small")
+
+        # Vérifier si le champ TTL est valide
+        if ttl == 0:
+            details.append("Invalid IP packet: TTL is zero")
+
+        # Vérifier si le paquet est fragmenté
+        if flags == 0x1:
+            # Extraire les fragments du paquet
+            fragments = fragment(log.pkt)
+
+            # Vérifier si les fragments sont correctement ordonnés
+            if all(frag_offset == i*8 for i in range(len(fragments))):
+                print("Fragments are correctly ordered")
+
+                # Vérifier si les fragments se chevauchent correctement
+                for i in range(len(fragments)-1):
+                    if fragments[i].payload[-8:] != fragments[i+1].payload[:8]:
+                        details.append("Fragments doesn't overlap correctly")
+
+            else:
+                details.append("Fragments unordered")
+
+        # Vérifier la validité du checksum
+        if (log.pkt.chksum != log.pkt.__class__(bytes(log.pkt)).chksum):
+            details.append("Invalid checksum")
 
     #blacklist ip
     if (IP in log.pkt):
@@ -93,13 +141,18 @@ def filter(pkt : Packet) -> dict[str,str]:
         # Ajouter ici le code pour bloquer l'adresse IP source ou déclencher une alerte
 
     #DDoS
-    if (IP in pkt and pkt[IP].ttl <= 200):
+    if (IP in pkt and pkt[IP].ttl >= 255):
         details.append("mostly ddos")
+    
+    try:
+        #ARP -> TODO:BUG
+        if (ARP in log.pkt 
+            and (log.pkt[ARP].hwsrc != log.pkt[ARP].hwdst and log.pkt[ARP].op == 1)
+            or (mac(log.pkt[ARP].psrc) != log.pkt[ARP].hwsrc)):
+            details.append("arp poisoning")
 
-    #ARP
-    if ((ARP in log.pkt and log.pkt[ARP].op == 2) 
-        and (mac(log.pkt[ARP].psrc) != log.pkt[ARP].hwsrc)):
-        details.append("arp poisoning")
+    except:
+        pass
 
     #ICMP
     if (ICMP in log.pkt and (len(log.pkt[ICMP]) > 65535)):
@@ -122,11 +175,12 @@ def filter(pkt : Packet) -> dict[str,str]:
           and log.pkt[DNSQR].qtype == 1 and log.pkt[DNSQR].qclass == 1):
         details.append("dns amplification")
 
-
     #SQL
     if (Raw in log.pkt and log.pkt.dport == 3306 
           and ("SELECT" or "DROP" or "GET" in str(log.pkt[Raw].load))):
-        details.append("sqli")
+        details.append("sql access from outside")
+
+
 
     if (len(details) >= 1): #si on a un traffic malveillant
         log.info = {"category":"WARN","details":details}
@@ -145,20 +199,25 @@ def packet_capture(pkt):
 
     # JSON correspondant au paquet capturé
     log = {
-        'timestamp': time.time(),
+        'timestamp': time(),
         'packet': str(pkt),
         'info':is_malicious
     }
     # Envoyer le log JSON au serveur distant
-    send_logs(log)
+    # send_logs(log)
 
-    # if (len(is_malicious["info"]["details"]) >= 1): #Si est suspect, on drop en affichant le log
-    #     print(is_malicious["info"])
+    if (len(is_malicious["info"]["details"]) >= 1): #Si est suspect, on drop en affichant le log
+        print(is_malicious["info"])
 
 if __name__ == "__main__":
     try:
+        # Arguments parser
+        parser = argparse.ArgumentParser(prog='pynetlog',description='Simple network logger using Scapy',epilog='0xanalog')
+        parser.add_argument('-i','--iface',dest="iface",required=True)
+        args = parser.parse_args()
+
         # Démarrer la capture de paquets
-        sniff(prn=packet_capture,store=False)
+        sniff(prn=packet_capture,store=False,iface=args.iface)
 
         # Compresser le fichier pcapng de sortie avec gzip
         with open('packets.pcapng', 'rb') as f_in:
@@ -166,17 +225,17 @@ if __name__ == "__main__":
                 f_out.writelines(f_in)
 
 
-    except requests.exceptions.ConnectionError:
+    except ConnectionError:
         print("Erreur lors de l\'envoi des logs au serveur distant\n")
-        sys.exit(1)
+        exit(1)
 
     except KeyboardInterrupt:
         print("BYE\n")
-        sys.exit(1)
+        exit(1)
 
     except PermissionError:
         print("Le script doit etre lance en root (utilisez sudo ou un environnement ayant les droits d'ecoute sur l'interface reseau de votre machine)")
-        sys.exit(1)
+        exit(1)
 
     except Exception as e:
         raise e
