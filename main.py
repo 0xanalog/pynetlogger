@@ -1,9 +1,12 @@
 import gzip
-import json
-import sys
-import requests
-import time
-import socket
+
+from sys import exit
+
+from requests import post
+from requests.exceptions import ConnectionError
+
+from time import time
+from socket import getfqdn,gethostbyname
 
 from scapy.all import Ether as ether
 from scapy.all import Packet,Raw,ARP,DNS,ICMP,DNSQR,TCP,IP,UDP,DHCP,sniff,srp,wrpcap
