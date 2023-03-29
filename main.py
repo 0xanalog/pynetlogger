@@ -204,10 +204,10 @@ def packet_capture(pkt):
         'info':is_malicious
     }
     # Envoyer le log JSON au serveur distant
-    # send_logs(log)
+    send_logs(log)
 
-    if (len(is_malicious["info"]["details"]) >= 1): #Si est suspect, on drop en affichant le log
-        print(is_malicious["info"])
+    #if (len(is_malicious["info"]["details"]) >= 1): #Si est suspect, on drop en affichant le log
+    #   print(is_malicious["info"])
 
 if __name__ == "__main__":
     try:
