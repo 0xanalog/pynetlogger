@@ -30,7 +30,7 @@ def send_logs(log : dict):
         print('Erreur lors de l\'envoi des logs au serveur distant')
 
 
-# code to get MAC Address
+# Questionner un device et recuperer sa MAC
 def mac(ip) -> str:
     try:
         arp_request = ARP(pdst=ip) #forge ARP req
