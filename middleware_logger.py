@@ -25,18 +25,25 @@ class Log(BaseModel):
     pkt       : str
     info      : dict
 
-i_log     : int       = 0  #log counter
-stack_log : list[Log] = [] #temp packet's stack send if (i_log == 64)
-
 #fastapi init
 app : FastAPI = FastAPI()
 
-# Deliver logs to json format for client
+# Deliver shards id to API client as list
+# @app.get("/shards")
+# async def serve_shards_id():
+#     shards : dict = db.json().jsonmget(["shard:"])
+#     return {"logs":logs}
+
+
+# @app.get("/shard/{shard_id}")
+# async def serve_shard(shard_id:str):
+
+
+# Deliver logs to json for API client
 @app.get("/logs")
 async def serve_logs():
-    logs : dict[int,Log] = db.json().jsonmget(["logs:0"])
+    logs : dict[int,Log] = db.json().get("shard:WQZBK7TFKFLB60E9CYCQXA08I1")
     return {"logs":logs}
-
 
 # Get 64 (or more) packets from logger
 @app.post("/rlog")
